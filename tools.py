@@ -101,10 +101,10 @@ TOOL_SCHEMAS = [
     {
         "name": "list_drive_files",
         "description": (
-            "List files in Google Drive. Returns file metadata including id, name, "
-            "mimeType, createdTime, modifiedTime, and parent folder ids. "
-            "If folder_id is provided, lists files in that specific folder. "
-            "Otherwise lists all files in My Drive."
+            "List files in Google Drive. Returns id, name, mimeType, and current "
+            "location (folder name or 'root'). Call list_folders first so location "
+            "names are resolved. If folder_id is provided, lists files in that folder "
+            "only. Otherwise lists all files in My Drive including files already in sub-folders."
         ),
         "input_schema": {
             "type": "object",

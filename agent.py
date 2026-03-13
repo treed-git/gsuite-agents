@@ -9,28 +9,30 @@ from tools import ProposalTracker, TOOL_SCHEMAS
 
 MODEL = "claude-sonnet-4-6"
 
-SYSTEM_PROMPT = """You are a Google Drive file organizer assistant. Your job is to help the user keep their Drive tidy by suggesting better file names and grouping files into logical folders.
+SYSTEM_PROMPT = """You are a Google Drive file organizer. Your job is to evaluate the user's entire Drive and produce an optimal, clean folder structure — then move every file to its best location.
 
 ## Your workflow
-1. Call `list_drive_files` to see what files exist.
-2. Call `list_folders` to see what folders already exist.
-3. For files with unclear names (e.g. "Untitled document", "Document1", generic names), call `get_file_snippet` to peek at the content and understand what the file is about.
-4. For each file that needs improvement:
-   - Call `propose_rename` if the name is unclear, generic, or unhelpful.
-   - Call `propose_move` to assign it to a relevant folder (existing or new).
-   - Call `propose_create_folder` first if the folder doesn't exist yet.
-5. When you've reviewed every file, call `finish_planning`.
+1. Call `list_folders` first so folder names are available when you list files.
+2. Call `list_drive_files` (no folder_id) to see all files and where they currently live. Each file shows its current location (folder name or "root").
+3. Evaluate the existing structure: are folders well-named? are files in the right place? are any folders too broad, too narrow, or redundant?
+4. For files whose content is unclear from the name alone, call `get_file_snippet`.
+5. Propose an improved structure:
+   - Call `propose_create_folder` for any new folders needed.
+   - Call `propose_rename` for files with unclear or generic names.
+   - Call `propose_move` for every file that belongs in a different (or better) folder — this includes files already in sub-folders if a better home exists.
+6. Call `finish_planning` when every file has been reviewed.
 
-## Important rules
+## Rules
 - NEVER modify file contents — only rename and move.
 - NEVER delete files.
-- If a file already has a clear, descriptive name and is in a sensible location, leave it alone. Don't propose unnecessary changes.
-- For non-Google files (PDFs, images, .docx, etc.), always keep the file extension when renaming (e.g. "invoice_march.pdf" → "Invoice March 2024.pdf").
-- For Google Workspace files (Docs, Sheets, Slides), do NOT add an extension.
-- Before proposing to create a folder, check `list_folders` — reuse an existing folder if one already fits.
+- Files at the root (location=root) are a problem to fix. Move them to an appropriate folder if one exists or can be created. Only leave a file at root if genuinely no folder fits.
+- It is fine to move a file that is already in a sub-folder if a better folder exists.
+- Rename only when the current name is unclear or generic (e.g. "Untitled", "Document1"). A good name is already good — don't change it for style.
+- For non-Google files (PDFs, images, .docx, etc.) preserve the file extension when renaming.
+- For Google Workspace files (Docs, Sheets, Slides) do NOT add an extension.
+- Prefer a few well-chosen folders over many tiny ones. Group by topic, project, or type (e.g. "Invoices", "Photos", "Work Projects", "Personal").
+- Before creating a folder, check `list_folders` — reuse an existing folder if it fits.
 - Use placeholder IDs from `propose_create_folder` (e.g. "new:Invoices") when calling `propose_move` for a folder you just proposed.
-- Be thoughtful and conservative: a few well-chosen folders are better than many tiny ones.
-- Think about grouping by topic, project, or file type (e.g. "Invoices", "Photos", "Work Projects", "Personal").
 """
 
 
@@ -121,10 +123,17 @@ def _dispatch_tool(name, inputs, service, tracker, files_by_id, folders_by_id, r
                 files_by_id[f["id"]] = f
             if not files:
                 return "No files found."
-            lines = [
-                f"- id={f['id']} | name=\"{f['name']}\" | type={f['mimeType']}"
-                for f in files
-            ]
+            lines = []
+            for f in files:
+                parents = f.get("parents", [])
+                parent_id = parents[0] if parents else None
+                if parent_id is None or parent_id == "root":
+                    location = "root"
+                else:
+                    location = folders_by_id.get(parent_id, {}).get("name") or parent_id
+                lines.append(
+                    f"- id={f['id']} | name=\"{f['name']}\" | type={f['mimeType']} | location={location}"
+                )
             return "\n".join(lines)
 
         elif name == "list_folders":
