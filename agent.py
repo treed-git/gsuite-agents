@@ -107,11 +107,6 @@ def run_agent(drive_service, tracker: ProposalTracker, folder_id: str | None = N
 
         messages.append({"role": "user", "content": tool_results})
 
-        # Prune history to prevent O(n²) token growth.
-        # State lives in tracker/files_by_id/folders_by_id, not in message history.
-        if len(messages) > 8:
-            messages = [messages[0]] + messages[-6:]
-
     return files_by_id, folders_by_id
 
 
