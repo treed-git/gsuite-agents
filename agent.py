@@ -1,6 +1,7 @@
 """Claude agentic loop for Google Drive file organization."""
 
 import os
+import time
 import anthropic
 
 from gdrive import list_files, list_folders, get_file_snippet
@@ -33,6 +34,20 @@ SYSTEM_PROMPT = """You are a Google Drive file organizer assistant. Your job is 
 """
 
 
+def _create_with_retry(client, **kwargs):
+    """Call client.messages.create with exponential backoff on rate limit errors."""
+    delay = 60
+    for attempt in range(5):
+        try:
+            return client.messages.create(**kwargs)
+        except anthropic.RateLimitError:
+            if attempt == 4:
+                raise
+            print(f"\nRate limit reached — waiting {delay}s before retrying...")
+            time.sleep(delay)
+            delay = min(delay * 2, 300)
+
+
 def run_agent(drive_service, tracker: ProposalTracker, folder_id: str | None = None):
     """Run the Claude agent loop until it calls finish_planning().
 
@@ -52,7 +67,8 @@ def run_agent(drive_service, tracker: ProposalTracker, folder_id: str | None = N
     ]
 
     while not tracker.done:
-        response = client.messages.create(
+        response = _create_with_retry(
+            client,
             model=MODEL,
             max_tokens=4096,
             system=SYSTEM_PROMPT,
@@ -91,6 +107,11 @@ def run_agent(drive_service, tracker: ProposalTracker, folder_id: str | None = N
 
         messages.append({"role": "user", "content": tool_results})
 
+        # Prune history to prevent O(n²) token growth.
+        # State lives in tracker/files_by_id/folders_by_id, not in message history.
+        if len(messages) > 8:
+            messages = [messages[0]] + messages[-6:]
+
     return files_by_id, folders_by_id
 
 
@@ -105,14 +126,10 @@ def _dispatch_tool(name, inputs, service, tracker, files_by_id, folders_by_id, r
                 files_by_id[f["id"]] = f
             if not files:
                 return "No files found."
-            lines = []
-            for f in files:
-                size = f.get("size", "")
-                size_str = f" ({int(size):,} bytes)" if size else ""
-                lines.append(
-                    f"- id={f['id']} | name=\"{f['name']}\" | type={f['mimeType']}"
-                    f" | created={f.get('createdTime','?')} | modified={f.get('modifiedTime','?')}{size_str}"
-                )
+            lines = [
+                f"- id={f['id']} | name=\"{f['name']}\" | type={f['mimeType']}"
+                for f in files
+            ]
             return "\n".join(lines)
 
         elif name == "list_folders":

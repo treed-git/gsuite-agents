@@ -15,7 +15,7 @@ def list_files(service, folder_id=None):
     """List all non-folder files. If folder_id is given, only files directly in that folder.
     Otherwise lists all files in My Drive that are not in any folder (top-level files).
 
-    Returns list of dicts: {id, name, mimeType, createdTime, modifiedTime, size, parents}
+    Returns list of dicts: {id, name, mimeType, parents}
     """
     if folder_id:
         query = f"'{folder_id}' in parents and mimeType != '{FOLDER_MIME}' and trashed = false"
@@ -27,7 +27,7 @@ def list_files(service, folder_id=None):
     while True:
         resp = service.files().list(
             q=query,
-            fields="nextPageToken, files(id, name, mimeType, createdTime, modifiedTime, size, parents)",
+            fields="nextPageToken, files(id, name, mimeType, parents)",
             pageToken=page_token,
             pageSize=100,
         ).execute()
@@ -67,7 +67,7 @@ def list_folders(service, parent_id=None):
     return results
 
 
-def get_file_snippet(service, file_id, mime_type, max_chars=500):
+def get_file_snippet(service, file_id, mime_type, max_chars=200):
     """Return a short text preview of a file's content.
 
     Works for Google Docs, Sheets, and Slides. Returns '[no preview available]'
