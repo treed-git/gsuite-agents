@@ -1,10 +1,71 @@
 """Main entry point — run this to organize your Google Drive."""
 
+import json
 import os
 import sys
 import argparse
 
 from dotenv import load_dotenv
+
+CACHE_FILE = ".gdrive_cache.json"
+
+
+def _drive_snapshot(service, folder_id):
+    """Return a snapshot of the current Drive state for cache comparison."""
+    from gdrive import list_files, list_folders
+    files = list_files(service, folder_id=folder_id)
+    folders = list_folders(service)
+    # Normalise to sorted lists of (id, name, parents) tuples for stable comparison
+    file_snap = sorted(
+        [(f["id"], f["name"], sorted(f.get("parents") or [])) for f in files]
+    )
+    folder_snap = sorted(
+        [(fo["id"], fo["name"], sorted(fo.get("parents") or [])) for fo in folders]
+    )
+    return {"files": file_snap, "folders": folder_snap}
+
+
+def load_analysis_cache(service, folder_id):
+    """Return (tracker, files_by_id, folders_by_id) from cache if Drive is unchanged, else None."""
+    if not os.path.exists(CACHE_FILE):
+        return None
+    try:
+        with open(CACHE_FILE) as f:
+            data = json.load(f)
+        current = _drive_snapshot(service, folder_id)
+        if current != data["snapshot"]:
+            return None
+        from tools import ProposalTracker
+        tracker = ProposalTracker()
+        tracker.renames = data["proposals"]["renames"]
+        tracker.moves = data["proposals"]["moves"]
+        tracker.new_folders = data["proposals"]["new_folders"]
+        tracker.done = True
+        return tracker, data["files_by_id"], data["folders_by_id"]
+    except Exception:
+        return None
+
+
+def save_analysis_cache(tracker, files_by_id, folders_by_id, snapshot):
+    """Write proposals and Drive snapshot to CACHE_FILE."""
+    data = {
+        "snapshot": snapshot,
+        "proposals": {
+            "renames": tracker.renames,
+            "moves": tracker.moves,
+            "new_folders": tracker.new_folders,
+        },
+        "files_by_id": files_by_id,
+        "folders_by_id": folders_by_id,
+    }
+    with open(CACHE_FILE, "w") as f:
+        json.dump(data, f)
+
+
+def clear_analysis_cache():
+    """Delete the analysis cache file if it exists."""
+    if os.path.exists(CACHE_FILE):
+        os.remove(CACHE_FILE)
 
 
 def check_setup():
@@ -31,6 +92,7 @@ def check_setup():
 def apply_changes(service, tracker, files_by_id, folders_by_id):
     """Apply all proposed changes: create folders, rename files, move files."""
     from gdrive import create_folder, rename_file, move_file
+    from googleapiclient.errors import HttpError
 
     # Step 1: Create new folders, building a map from placeholder → real ID
     placeholder_to_real: dict[str, str] = {}
@@ -52,10 +114,16 @@ def apply_changes(service, tracker, files_by_id, folders_by_id):
     # Step 2: Rename files
     for file_id, new_name in tracker.renames.items():
         old_name = files_by_id.get(file_id, {}).get("name", file_id)
-        rename_file(service, file_id, new_name)
-        print(f"  Renamed: \"{old_name}\" → \"{new_name}\"")
-        if file_id in files_by_id:
-            files_by_id[file_id]["name"] = new_name
+        try:
+            rename_file(service, file_id, new_name)
+            print(f"  Renamed: \"{old_name}\" → \"{new_name}\"")
+            if file_id in files_by_id:
+                files_by_id[file_id]["name"] = new_name
+        except HttpError as e:
+            if e.resp.status == 403:
+                print(f"  Skipped rename: \"{old_name}\" (no permission)")
+            else:
+                raise
 
     # Step 3: Move files
     for file_id, folder_id in tracker.moves.items():
@@ -70,8 +138,14 @@ def apply_changes(service, tracker, files_by_id, folders_by_id):
         parents = file_info.get("parents", [])
         current_parent = parents[0] if parents else "root"
 
-        move_file(service, file_id, real_folder_id, current_parent)
-        print(f"  Moved: \"{file_name}\" → \U0001f4c1 {folder_name}")
+        try:
+            move_file(service, file_id, real_folder_id, current_parent)
+            print(f"  Moved: \"{file_name}\" → \U0001f4c1 {folder_name}")
+        except HttpError as e:
+            if e.resp.status == 403:
+                print(f"  Skipped move: \"{file_name}\" (no permission)")
+            else:
+                raise
 
 
 def main():
@@ -105,8 +179,15 @@ def main():
     service = get_drive_service()
     tracker = ProposalTracker()
 
-    print("Analyzing files with AI...\n")
-    files_by_id, folders_by_id = run_agent(service, tracker, folder_id=folder_id)
+    cached = load_analysis_cache(service, folder_id)
+    if cached:
+        print("Drive unchanged — using cached analysis.\n")
+        tracker, files_by_id, folders_by_id = cached
+    else:
+        print("Analyzing files with AI...\n")
+        snapshot = _drive_snapshot(service, folder_id)
+        files_by_id, folders_by_id = run_agent(service, tracker, folder_id=folder_id)
+        save_analysis_cache(tracker, files_by_id, folders_by_id, snapshot)
 
     if not tracker.has_changes():
         print("Your Drive looks organized! Nothing to do.")
@@ -123,12 +204,14 @@ def main():
     if args.apply:
         print(f"Applying {label} (--apply flag set)...\n")
         apply_changes(service, tracker, files_by_id, folders_by_id)
+        clear_analysis_cache()
         print(f"\nDone! {label} applied to your Google Drive.")
     else:
         answer = input(f"Apply these {label}? [y/N] ")
         if answer.strip().lower() == "y":
             print()
             apply_changes(service, tracker, files_by_id, folders_by_id)
+            clear_analysis_cache()
             print(f"\nDone! {label} applied to your Google Drive.")
         else:
             print("\nAborted. No changes were made.")

@@ -11,5 +11,8 @@ __pycache__/
 venv/
 env/
 
+# Analysis cache
+.gdrive_cache.json
+
 # Logs
 *.log
